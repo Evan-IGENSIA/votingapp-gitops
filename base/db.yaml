@@ -1,0 +1,96 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  labels:
+    app.kubernetes.io/name: db
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: db
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-hl
+  labels:
+    app.kubernetes.io/name: db
+spec:
+  # headless : nom DNS stable par pod (db-0.db-hl.<namespace>.svc.cluster.local)
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: db
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+  labels:
+    app.kubernetes.io/name: db
+spec:
+  serviceName: db-hl
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: db
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db
+    spec:
+      containers:
+      - name: db
+        image: postgres:15-alpine
+        env:
+        - name: POSTGRES_USER
+          value: postgres
+        # Secret non versionné : créé à la main dans chaque namespace
+        # (code/create-db-secret.sh), seule clé POSTGRES_PASSWORD
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: POSTGRES_PASSWORD
+        # sous-répertoire : initdb refuse un répertoire non vide (lost+found...)
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        ports:
+        - name: postgres
+          containerPort: 5432
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "postgres"]
+          periodSeconds: 5
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "postgres"]
+          periodSeconds: 10
+          failureThreshold: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+  # un PVC par pod : data-db-0
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ReadWriteOnce]
+      storageClassName: local-path
+      resources:
+        requests:
+          storage: 2Gi
